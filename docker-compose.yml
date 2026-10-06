@@ -1,0 +1,53 @@
+# PyUnit Dashboard — надстройка над PyUnit (https://github.com/xatang/PyUnit).
+# PyUnit не меняется: эти контейнеры стоят рядом и читают его API и базу.
+#
+# Значения берутся из .env (его создаёт install.sh):
+#   PYUNIT_DIR   каталог установленного PyUnit (там лежит pyunit.db)
+#   PYUNIT_PORT  порт PyUnit на хосте (обычно 5000)
+#   UI_PORT      порт этой панели (по умолчанию 5001)
+
+# Строка version нужна старому docker-compose 1.x: без неё он читает файл как
+# устаревший формат v1. Плагин `docker compose` v2 её просто игнорирует.
+version: '3.4'
+
+services:
+  dashboard-ui:
+    image: nginx:alpine
+    container_name: pyunit-dashboard-ui
+    ports:
+      - "${UI_PORT:-5001}:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - PYUNIT_PORT=${PYUNIT_PORT:-5000}
+    volumes:
+      - ./web:/srv/web:ro
+      # Шаблон: nginx при старте подставит PYUNIT_PORT
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx/upgrade.conf:/etc/nginx/conf.d/00-upgrade.conf:ro
+    restart: unless-stopped
+
+  dashboard-stats:
+    build: ./stats
+    container_name: pyunit-dashboard-stats
+    # Таймер останова вызывает API PyUnit (как кнопка «Стоп»)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - DB_PATH=/data/pyunit.db
+      - OWN_DB=/state/stats.db
+      - PYUNIT_API=http://host.docker.internal:${PYUNIT_PORT:-5000}
+    volumes:
+      # База PyUnit — те же три файла, что монтирует сам PyUnit. Сервис
+      # открывает её на чтение (URI mode=ro) и ничего в неё не пишет;
+      # rw нужен лишь потому, что SQLite в режиме WAL требует доступ к -shm.
+      - ${PYUNIT_DIR}/pyunit.db:/data/pyunit.db
+      - ${PYUNIT_DIR}/pyunit.db-wal:/data/pyunit.db-wal
+      - ${PYUNIT_DIR}/pyunit.db-shm:/data/pyunit.db-shm
+      # Собственная база сессий: PyUnit стирает свою телеметрию при каждом
+      # запуске, а история сушек должна переживать это.
+      - stats_state:/state
+    restart: unless-stopped
+
+volumes:
+  stats_state:
