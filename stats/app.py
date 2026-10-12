@@ -111,7 +111,10 @@ def step(c, act, row, names):
         return None
     # pending и всё незнакомое
     if act:
-        done = act['timer'] and act['left'] is not None and act['left'] <= 120
+        # Завершена: таймер пресета дошёл до конца или сушку остановил таймер
+        # пользователя (это плановое окончание). Иначе — остановлена вручную.
+        done = act.get('stopped_by_timer') or (
+            act['timer'] and act['left'] is not None and act['left'] <= 120)
         finish(c, act, 'completed' if done else 'aborted')
     return None
 
@@ -218,6 +221,10 @@ def timer_tick():
                 return
             if ok:
                 kv_put(c, 'timer', None)
+                act = kv_get(c, 'active', None)
+                if act:
+                    act['stopped_by_timer'] = True    # счётчик запишет её как завершённую
+                    kv_put(c, 'active', act)
                 c.commit()
                 print('timer: сушка остановлена по таймеру (%.2f ч)' % t['hours'], flush=True)
     finally:
