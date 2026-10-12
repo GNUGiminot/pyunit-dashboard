@@ -629,8 +629,10 @@
       li.dataset.outcome = x.outcome;
       li.innerHTML = '<span class="sess__date"></span><span class="sess__mat"></span><span class="sess__dur"></span>';
       var dt = new Date(parseTs(x.started_at));
+      // Время в базе — UTC; parseTs переводит его в часовой пояс браузера
       li.querySelector('.sess__date').textContent =
-        String(dt.getDate()).padStart(2, '0') + '.' + String(dt.getMonth() + 1).padStart(2, '0');
+        String(dt.getDate()).padStart(2, '0') + '.' + String(dt.getMonth() + 1).padStart(2, '0') +
+        ' ' + fmtClock(dt.getTime());
       li.querySelector('.sess__mat').textContent = x.material;
       li.querySelector('.sess__dur').textContent = fmtDur(x.seconds);
       sl.appendChild(li);
