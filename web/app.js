@@ -2,8 +2,8 @@
    Сушилка PyUnit — клиент
    Говорит с PyUnit напрямую (nginx проксирует /api на :5000, один origin),
    счётчик берёт из сервиса-компаньона /stats.
-   Если устройство недоступно — переходит в демонстрационный режим
-   со встроенным симулятором, чтобы интерфейс можно было смотреть офлайн.
+   Работает только с настоящей сушилкой: если PyUnit недоступен, пишет
+   «нет связи» и переподключается.
    ========================================================================== */
 (function () {
   'use strict';
@@ -64,7 +64,6 @@
 
   // --- Состояние ----------------------------------------------------------
   var state = {
-    demo: false,
     unit: null,          // {id, name}
     presets: [],         // пресеты, привязанные к блоку
     selectedPreset: null,
@@ -196,17 +195,17 @@
 
     if (!d) {
       lamp.dataset.state = 'offline';
-      txt.textContent = state.demo ? 'демо-режим' : 'нет связи';
+      txt.textContent = 'нет связи';
       return;
     }
 
     var st = STATUS[d.status] || STATUS.pending;
     lamp.dataset.state = st.lamp;
-    txt.textContent = state.demo ? st.text + ' · демо' : st.text;
+    txt.textContent = st.text;
 
     // Телеметрия идёт раз в секунду. Если её нет дольше STALE_MS — цифры на
     // экране уже не правда: гасим их и пишем, сколько данных нет.
-    var stale = !state.demo && state.lastRx && (Date.now() - state.lastRx > STALE_MS);
+    var stale = state.lastRx && (Date.now() - state.lastRx > STALE_MS);
     document.body.classList.toggle('is-stale', !!stale);
     if (stale) {
       lamp.dataset.state = 'offline';
@@ -431,7 +430,7 @@
   }
 
   function connectWs() {
-    if (state.demo || !state.unit) return;
+    if (!state.unit) return;
     try { if (state.ws) state.ws.close(); } catch (e) { /* уже закрыт */ }
 
     var since = new Date(Date.now() - state.rangeSec * 1000)
@@ -499,11 +498,9 @@
   function startDrying() {
     if (!state.selectedPreset || !state.unit) return;
     var hours = timerChoice;
-    var started = state.demo
-      ? Promise.resolve(sim.start(state.selectedPreset))
-      : api('/api/dashboard/control/set-preset/' + state.unit.id + '?preset_id=' + state.selectedPreset, { method: 'POST' });
-    started.then(function () {
-      if (hours <= 0) { toast(state.demo ? 'Демо: запуск' : 'Запущено'); return; }
+    api('/api/dashboard/control/set-preset/' + state.unit.id + '?preset_id=' + state.selectedPreset, { method: 'POST' })
+    .then(function () {
+      if (hours <= 0) { toast('Запущено'); return; }
       return timerSend(hours).then(function () {
         toast('Запущено · остановится через ' + hours + '\u00A0ч');
       }, function (e) {
@@ -517,7 +514,6 @@
     if (!state.unit) return;
     timerChoice = 0;
     timerSend(0).catch(function () { /* сервис сам снимет устаревший таймер */ });
-    if (state.demo) { sim.stop(); toast('Демо: остановлено'); return; }
     api('/api/dashboard/control/set-preset/' + state.unit.id, { method: 'POST' })
       .then(function (r) { toast((r && r.message) || 'Остановлено'); })
       .catch(function (e) { toast('Не удалось остановить: ' + e.message); });
@@ -540,15 +536,10 @@
   }
 
   function timerFetch() {
-    if (state.demo) { renderTimer(); return; }
     api('/stats/timer').then(timerApply).catch(function () { /* счётчик недоступен */ });
   }
 
   function timerSend(hours) {
-    if (state.demo) {
-      timerApply(hours > 0 ? { active: true, stop_at: Date.now() / 1000 + hours * 3600, hours: hours } : null);
-      return Promise.resolve();
-    }
     return api('/stats/timer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -594,8 +585,7 @@
   var statsPeriod = 'all';
 
   function loadStats() {
-    var p = state.demo ? Promise.resolve(sim.stats()) : api('/stats/summary?period=' + statsPeriod);
-    p.then(renderStats).catch(function () {
+    api('/stats/summary?period=' + statsPeriod).then(renderStats).catch(function () {
       $('totRuns').textContent = '—';
       $('matList').innerHTML = '<li class="empty">Счётчик недоступен</li>';
       $('sessionList').innerHTML = '';
@@ -603,7 +593,6 @@
   }
 
   function renderStats(s) {
-    $('statsDemo').hidden = !state.demo;
     var runs = $('totRuns');
     runs.textContent = s.totals.runs;
     if (s.totals.active) {
@@ -654,134 +643,6 @@
   }
 
   // ======================================================================
-  //  Демонстрационный симулятор
-  // ======================================================================
-  var sim = (function () {
-    var s = {
-      status: 'pending', presetId: null, temp: 24.0, rh: 46.0,
-      heater: false, fan: false, lid: false, left: null, t0: 0, tick: 0
-    };
-    var PRESETS = [
-      { id: 1, name: 'PLA',  temperature: 50, humidity: 10, dry_time: 180, max_temperature_delta: 20, humidity_storage_dry_time: 10, storage_type: 'humidity', dryers: [{ id: 1 }] },
-      { id: 2, name: 'PETG', temperature: 65, humidity: 10, dry_time: 240, max_temperature_delta: 15, humidity_storage_dry_time: 10, storage_type: 'humidity', dryers: [{ id: 1 }] },
-      { id: 3, name: 'TPU',  temperature: 60, humidity: 10, dry_time: 300, max_temperature_delta: 20, humidity_storage_dry_time: 10, storage_type: 'humidity', dryers: [{ id: 1 }] },
-      { id: 4, name: 'ABS',  temperature: 80, humidity: 10, dry_time: 300, max_temperature_delta: 20, humidity_storage_dry_time: 10, storage_type: 'humidity', dryers: [{ id: 1 }] },
-      { id: 5, name: 'PA',   temperature: 90, humidity: 10, dry_time: 60,  max_temperature_delta: 20, humidity_storage_dry_time: 0,  storage_type: 'temperature', dryers: [{ id: 1 }] },
-      { id: 6, name: 'PC',   temperature: 85, humidity: 10, dry_time: 60,  max_temperature_delta: 10, humidity_storage_dry_time: 0,  storage_type: 'none', dryers: [{ id: 1 }] }
-    ];
-
-    function preset() { for (var i = 0; i < PRESETS.length; i++) if (PRESETS[i].id === s.presetId) return PRESETS[i]; return null; }
-
-    function step() {
-      s.tick++;
-      var p = preset();
-      if (s.status === 'pending') {
-        s.temp += (24 - s.temp) * 0.02;
-        s.rh += (46 - s.rh) * 0.02;
-        s.heater = false; s.fan = false; s.left = null;
-      } else if (p) {
-        var target = p.temperature;
-        s.heater = s.temp < target - 0.3;
-        s.fan = s.temp > 50;
-        s.temp += (target - s.temp) * 0.035 + (Math.random() - 0.5) * 0.06;
-        // влага падает, пока греем; слегка колеблется у цели
-        var floor = p.humidity - 1.5;
-        s.rh += (floor - s.rh) * 0.012 + (Math.random() - 0.5) * 0.12;
-        if (s.rh < 2) s.rh = 2;
-        if (s.status === 'drying' && s.rh <= p.humidity) {
-          s.status = 'timer_drying'; s.t0 = Date.now();
-        }
-        if (s.status === 'timer_drying') {
-          var total = p.dry_time * 60;
-          var el = (Date.now() - s.t0) / 1000;
-          // демо идёт в 120 раз быстрее реального времени
-          s.left = Math.max(0, total - el * 120);
-          if (s.left <= 0) { s.status = p.storage_type === 'none' ? 'pending' : 'humidity_storage'; s.left = null; }
-        }
-        s.lid = s.status !== 'pending' && (Math.floor(s.tick / 45) % 2 === 1);
-      }
-      return {
-        dryer_id: 1,
-        status: s.status,
-        current_preset_id: s.status === 'pending' ? null : s.presetId,
-        timestamp: new Date().toISOString().replace('Z', ''),
-        temperature: Math.round(s.temp * 10) / 10,
-        relative_humidity: Math.round(s.rh * 10) / 10,
-        heater_temperature: Math.round((s.temp + (s.heater ? 6 : 1)) * 10) / 10,
-        heater_is_on: s.heater,
-        heater_fan_is_run: s.fan,
-        servo_is_open: s.lid,
-        time_left_drying: s.left === null ? null : Math.round(s.left)
-      };
-    }
-
-    return {
-      presets: PRESETS,
-      start: function (id) { s.presetId = id; s.status = 'drying'; s.t0 = Date.now(); },
-      stop: function () { s.status = 'pending'; s.presetId = null; s.left = null; },
-      step: step,
-      seed: function () {
-        // предыстория на 2 часа, чтобы самописец не был пустым
-        var out = [], now = Date.now();
-        for (var i = 7200; i > 0; i -= 10) {
-          var k = 1 - i / 7200;
-          out.push({
-            t: now - i * 1000,
-            temp: 24 + 41 * Math.min(1, k * 3) + Math.sin(i / 90) * 0.4,
-            rh: 46 * Math.exp(-k * 2.6) + 8.5 + Math.sin(i / 60) * 0.25
-          });
-        }
-        return out;
-      },
-      stats: function () {
-        var mats = [
-          { name: 'PETG', runs: 23, seconds: 23 * 4.2 * 3600 },
-          { name: 'PLA',  runs: 17, seconds: 17 * 3.1 * 3600 },
-          { name: 'ABS',  runs: 6,  seconds: 6 * 5.4 * 3600 },
-          { name: 'TPU',  runs: 4,  seconds: 4 * 5.1 * 3600 },
-          { name: 'PA',   runs: 2,  seconds: 2 * 1.2 * 3600 }
-        ];
-        var runs = 0, sec = 0;
-        mats.forEach(function (m) { runs += m.runs; sec += m.seconds; m.avg_seconds = m.seconds / m.runs; });
-        var sess = [], names = ['PETG', 'PLA', 'ABS', 'TPU', 'PA'];
-        for (var i = 0; i < 12; i++) {
-          sess.push({
-            material: names[i % names.length],
-            started_at: new Date(Date.now() - (i * 2.4 + 1) * 86400000).toISOString().replace('Z', ''),
-            seconds: (2.5 + (i % 4)) * 3600,
-            outcome: i === 3 || i === 9 ? 'aborted' : 'completed'
-          });
-        }
-        return { totals: { runs: runs, seconds: sec, heater_seconds: sec * 0.62, aborted: 2 }, materials: mats, sessions: sess };
-      }
-    };
-  })();
-
-  function startDemo(autoRun) {
-    state.demo = true;
-    state.unit = { id: 1, name: 'U1' };
-    state.presets = sim.presets;
-    state.history = sim.seed();
-    renderPresets();
-    if (autoRun) {
-      // Витринный режим: показываем прибор в работе, а не в простое
-      state.selectedPreset = 2;
-      renderPresets();
-      sim.start(2);
-    }
-    setInterval(function () {
-      if (timer.active && Date.now() >= timer.stopAt) {
-        sim.stop(); timerApply(null); toast('Демо: остановлено по таймеру');
-      }
-      var d = sim.step();
-      state.last = d;
-      pushHistory(d);
-      render();
-      if (state.screen === 'run') drawTrace();
-    }, 1000);
-  }
-
-  // ======================================================================
   //  Оболочка: экраны, тема, уведомления
   // ======================================================================
   var toastTimer = null;
@@ -815,15 +676,9 @@
     return location.protocol + '//' + location.hostname + ':' + FULL_PORT + '/' + path;
   }
   function setupLinks() {
-    $('moreHost').textContent = state.demo ? 'демо' : location.hostname + ':' + FULL_PORT;
+    $('moreHost').textContent = location.hostname + ':' + FULL_PORT;
     document.querySelectorAll('.link[data-path]').forEach(function (a) {
-      if (state.demo) {
-        a.setAttribute('href', '#');
-        a.onclick = function (e) { e.preventDefault(); toast('В демо-режиме ссылки не работают'); };
-      } else {
-        a.setAttribute('href', fullUrl(a.dataset.path));
-        a.onclick = null;
-      }
+      a.setAttribute('href', fullUrl(a.dataset.path));
     });
   }
 
@@ -859,7 +714,7 @@
         b.classList.add('is-on');
         state.rangeSec = parseInt(b.dataset.range, 10);
         drawTrace();
-        if (!state.demo) connectWs();
+        connectWs();
       });
     });
     document.querySelectorAll('[data-period]').forEach(function (b) {
@@ -892,12 +747,8 @@
       navigator.serviceWorker.register('sw.js').catch(function () { /* не критично */ });
     }
 
-    var forced = /[?&]demo=1/.test(location.search);
-    if (forced) { startDemo(true); render(); drawTrace(); return; }
-
-    // На настоящем устройстве демо само не включается: выдуманные показания
-    // на панели управления нагревателем опасны. Нет связи — так и пишем и
-    // переподключаемся, пока PyUnit не ответит (например, после перезагрузки).
+    // Нет связи — так и пишем и переподключаемся, пока PyUnit не ответит
+    // (например, после перезагрузки устройства).
     (function boot(attempt) {
       loadStatic().then(function () {
         connectWs();
