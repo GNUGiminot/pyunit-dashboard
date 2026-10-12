@@ -214,6 +214,10 @@ body {
   .dial__label { font-size: .43rem; letter-spacing: .07em; margin-top: .32rem; }
 }
 
+/* Данных нет дольше 20 с: показания гаснут, чтобы их не приняли за текущие */
+.dials, .setpoints, .progress { transition: opacity .4s ease, filter .4s ease; }
+body.is-stale .dials, body.is-stale .setpoints, body.is-stale .progress { opacity: .4; filter: grayscale(.7); }
+
 /* --- Уставки ------------------------------------------------------------ */
 .setpoints { display: grid; grid-template-columns: repeat(3, 1fr); margin: 0; padding: 0; }
 .setpoint { padding: 10px 10px; text-align: center; }

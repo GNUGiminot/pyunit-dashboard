@@ -15,6 +15,7 @@
   var CAP = STROKE / 2;                  // круглый торец выступает на радиус
   var CIRC = 2 * Math.PI * R;
   var RANGE = { temp: [0, 120], hum: [0, 100] };
+  var STALE_MS = 20000;                  // без телеметрии дольше — показания устарели
 
   // Цвет кольца вычисляется из самого значения: это шкала, а не украшение.
   // Холодная камера — синяя, прогретая уходит в янтарь и красное;
@@ -203,6 +204,15 @@
     lamp.dataset.state = st.lamp;
     txt.textContent = state.demo ? st.text + ' · демо' : st.text;
 
+    // Телеметрия идёт раз в секунду. Если её нет дольше STALE_MS — цифры на
+    // экране уже не правда: гасим их и пишем, сколько данных нет.
+    var stale = !state.demo && state.lastRx && (Date.now() - state.lastRx > STALE_MS);
+    document.body.classList.toggle('is-stale', !!stale);
+    if (stale) {
+      lamp.dataset.state = 'offline';
+      txt.textContent = 'нет данных ' + fmtDur((Date.now() - state.lastRx) / 1000);
+    }
+
     $('unitName').textContent = state.unit ? state.unit.name : '—';
 
     var preset = presetById(d.current_preset_id);
@@ -263,6 +273,7 @@
     // Кнопки
     $('btnStart').disabled = !state.selectedPreset || d.status !== 'pending';
     $('btnStop').disabled = d.status === 'pending';
+    if (stale) $('btnStart').disabled = true;     // состояние неизвестно — не запускаем вслепую
   }
 
   function lampState(id, on, yes, no) {
@@ -434,7 +445,7 @@
       } else {
         rows.forEach(pushHistory);
       }
-      if (rows.length) state.last = rows[rows.length - 1];
+      if (rows.length) { state.last = rows[rows.length - 1]; state.lastRx = Date.now(); }
       render();
       drawTrace();
     };
@@ -839,7 +850,8 @@
     document.querySelectorAll('#timerSeg [data-hours]').forEach(function (b) {
       b.addEventListener('click', function () { onTimerChip(parseFloat(b.dataset.hours)); });
     });
-    setInterval(renderTimer, 1000);       // обратный отсчёт тикает и без телеметрии
+    setInterval(renderTimer, 1000);
+    setInterval(function () { if (state.last) render(); }, 2000);   // заметить, что данные перестали идти       // обратный отсчёт тикает и без телеметрии
     setInterval(timerFetch, 10000);       // таймер могли поставить/снять с другого устройства
     timerFetch();
     window.addEventListener('resize', drawTrace);
@@ -857,15 +869,21 @@
     var forced = /[?&]demo=1/.test(location.search);
     if (forced) { startDemo(true); render(); drawTrace(); return; }
 
-    loadStatic().then(function () {
-      connectWs();
-      render();
-    }).catch(function () {
-      startDemo();
-      render();
-      drawTrace();
-      toast('Сушилка недоступна — демонстрационный режим');
-    });
+    // На настоящем устройстве демо само не включается: выдуманные показания
+    // на панели управления нагревателем опасны. Нет связи — так и пишем и
+    // переподключаемся, пока PyUnit не ответит (например, после перезагрузки).
+    (function boot(attempt) {
+      loadStatic().then(function () {
+        connectWs();
+        timerFetch();
+        render();
+        if (attempt > 0) toast('Связь с сушилкой восстановлена');
+      }).catch(function () {
+        render();
+        if (attempt === 0) toast('Нет связи с сушилкой — переподключаюсь');
+        setTimeout(function () { boot(attempt + 1); }, Math.min(15000, 3000 + attempt * 2000));
+      });
+    })(0);
 
     render();
   }
