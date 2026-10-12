@@ -294,6 +294,15 @@
     if (h > 0) return h + ':' + String(m).padStart(2, '0');
     return m + ':' + String(s).padStart(2, '0');
   }
+  // «2 ч 10 мин» вместо «2:10», где непонятно, часы это или минуты
+  function fmtLong(sec) {
+    sec = Math.max(0, Math.round(sec));
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+    if (h > 0) return h + '\u00A0ч ' + m + '\u00A0мин';
+    if (m > 0) return m + '\u00A0мин';
+    return sec + '\u00A0с';
+  }
+
   function fmtClock(ms) {
     var d = new Date(ms);
     return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
@@ -558,7 +567,12 @@
     if (!el) return;
     if (timer.active) {
       var left = Math.max(0, (timer.stopAt - Date.now()) / 1000);
-      el.textContent = 'стоп в ' + fmtClock(timer.stopAt) + ' · через ' + fmtDur(left);
+      // Таймер может быть до 48 ч — если остановка не сегодня, нужна дата
+      var stopDay = new Date(timer.stopAt), today = new Date();
+      var sameDay = stopDay.toDateString() === today.toDateString();
+      var when = sameDay ? fmtClock(timer.stopAt)
+        : String(stopDay.getDate()).padStart(2, '0') + '.' + String(stopDay.getMonth() + 1).padStart(2, '0') + ' ' + fmtClock(timer.stopAt);
+      el.textContent = 'стоп ' + (sameDay ? 'в ' : '') + when + ' · через ' + fmtLong(left);
       el.dataset.on = 'true';
     } else {
       el.textContent = (timerChoice > 0 && !isRunning()) ? 'включится при запуске' : '';
