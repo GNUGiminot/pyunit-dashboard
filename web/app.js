@@ -67,6 +67,9 @@
     unit: null,          // {id, name}
     presets: [],         // пресеты, привязанные к блоку
     selectedPreset: null,
+    histBucket: 1,       // интервал усреднения истории, с
+    histError: false,
+    session: null,       // идущая сушка по данным счётчика: точное начало
     last: null,          // последняя телеметрия
     history: [],         // [{t, temp, rh}]
     rangeSec: 7200,
@@ -196,6 +199,9 @@
     if (!d) {
       lamp.dataset.state = 'offline';
       txt.textContent = 'нет связи';
+      // без данных дуги пустые: иначе SVG рисует окружность целиком,
+      // как будто 120 °C и 100 %
+      setArc('dialTemp', 'temp', null); setArc('dialHum', 'hum', null);
       return;
     }
 
@@ -244,8 +250,13 @@
       if (!hasLeft) {
         // Прогрев: обратного отсчёта ещё нет — таймер в PyUnit стартует
         // только когда влажность дойдёт до цели. Показываем время с запуска.
-        var el = elapsedSinceStart();
-        $('timeLeft').textContent = el.sec === null ? '—' : (el.capped ? '≥ ' : '') + fmtDur(el.sec);
+        if (state.session && state.session.started_at) {
+          // точное начало — от сервиса счётчика (совпадает с журналом PyUnit)
+          $('timeLeft').textContent = fmtLong((Date.now() - parseTs(state.session.started_at)) / 1000);
+        } else {
+          var el = elapsedSinceStart();
+          $('timeLeft').textContent = el.sec === null ? '—' : (el.capped ? '≥ ' : '') + fmtLong(el.sec);
+        }
         $('progressFill').style.width = '0%';
         $('elapsedText').textContent = 'идёт прогрев';
         $('etaText').textContent = 'отсчёт с ' + preset.humidity + ' %';
@@ -348,7 +359,7 @@
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, w, h);
 
-    var padL = 26, padR = 26, padT = 8, padB = 16;
+    var padL = 26, padR = 26, padT = 8, padB = 22;
     var iw = w - padL - padR, ih = h - padT - padB;
 
     // сетка
@@ -373,10 +384,18 @@
       g.textAlign = 'left'; g.fillText(String(100 - k * 25), padL + iw + 4, ty);
     }
 
+    // подписи времени по горизонтали
+    g.textBaseline = 'top';
+    for (var q = 0; q <= 4; q++) {
+      var tx = padL + (iw * q) / 4;
+      g.textAlign = q === 0 ? 'left' : q === 4 ? 'right' : 'center';
+      g.fillText(fmtClock(from + (now - from) * q / 4), tx, padT + ih + 6);
+    }
+
     if (pts.length < 2) {
       g.fillStyle = colMute; g.textAlign = 'center'; g.textBaseline = 'middle';
       g.font = '12px system-ui, sans-serif';
-      g.fillText('нет данных за период', w / 2, h / 2);
+      g.fillText(state.histError ? 'история недоступна' : 'нет данных за период', w / 2, padT + ih / 2);
       return;
     }
 
@@ -387,12 +406,15 @@
     function line(getY, key, color) {
       g.strokeStyle = color; g.lineWidth = 2; g.lineJoin = 'round'; g.lineCap = 'round';
       g.beginPath();
-      var started = false;
+      // Разрыв в данных (сушилка была выключена) не протягиваем прямой линией
+      var gapMs = Math.max(state.histBucket * 3, 30) * 1000;
+      var prevT = null;
       for (var j = 0; j < pts.length; j++) {
         var p = pts[j];
-        if (p[key] === null || p[key] === undefined || isNaN(p[key])) continue;
+        if (p[key] === null || p[key] === undefined || isNaN(p[key])) { prevT = null; continue; }
         var px = x(p.t), py = getY(p[key]);
-        if (!started) { g.moveTo(px, py); started = true; } else { g.lineTo(px, py); }
+        if (prevT === null || p.t - prevT > gapMs) g.moveTo(px, py); else g.lineTo(px, py);
+        prevT = p.t;
       }
       g.stroke();
     }
@@ -433,11 +455,13 @@
     if (!state.unit) return;
     try { if (state.ws) state.ws.close(); } catch (e) { /* уже закрыт */ }
 
-    var since = new Date(Date.now() - state.rangeSec * 1000)
-      .toISOString().replace('Z', '').split('.')[0];
+    // Отсюда — только живые данные и последнее состояние. Историю для графика
+    // PyUnit отдаёт лишь последними N записями (4000 ≈ 67 мин) — она берётся
+    // у сервиса панели целиком за окно (loadHistory).
+    var since = new Date(Date.now() - 300 * 1000).toISOString().replace('Z', '').split('.')[0];
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var url = proto + '//' + location.host + '/api/dashboard/dryer/' + state.unit.id +
-              '?start_time=' + encodeURIComponent(since) + '&limit=4000';
+              '?start_time=' + encodeURIComponent(since) + '&limit=300';
 
     var ws = new WebSocket(url);
     state.ws = ws;
@@ -447,12 +471,7 @@
       try { msg = JSON.parse(ev.data); } catch (e) { return; }
       var rows = Array.isArray(msg) ? msg : (msg && msg.history) ? msg.history : null;
       if (!rows) return;
-      if (!Array.isArray(msg)) {
-        state.history = [];
-        rows.forEach(pushHistory);
-      } else {
-        rows.forEach(pushHistory);
-      }
+      rows.forEach(pushHistory);      // старые и повторные точки pushHistory отбрасывает
       if (rows.length) { state.last = rows[rows.length - 1]; state.lastRx = Date.now(); }
       render();
       drawTrace();
@@ -462,6 +481,24 @@
       state.wsTimer = setTimeout(connectWs, 3000);
     };
     ws.onerror = function () { try { ws.close(); } catch (e) { /* и так закрывается */ } };
+  }
+
+  function loadHistory() {
+    return api('/stats/history?seconds=' + state.rangeSec + '&points=480').then(function (r) {
+      var pts = (r.points || []).map(function (p) { return { t: p[0], temp: p[1], rh: p[2] }; });
+      var lastT = pts.length ? pts[pts.length - 1].t : 0;
+      // живые точки, пришедшие после выборки, сохраняем
+      var live = state.history.filter(function (p) { return p.t > lastT; });
+      state.history = pts.concat(live);
+      state.histBucket = r.bucket || 1;
+      state.histError = false;
+      drawTrace();
+    }).catch(function () { state.histError = true; drawTrace(); });
+  }
+
+  function activeFetch() {
+    api('/stats/active').then(function (r) { state.session = (r && r.active) ? r : null; render(); })
+      .catch(function () { /* сервис панели недоступен — останется оценка по истории */ });
   }
 
   function loadStatic() {
@@ -703,6 +740,7 @@
 
   function init() {
     buildTicks();
+    setArc('dialTemp', 'temp', null); setArc('dialHum', 'hum', null);
     initTheme();
 
     document.querySelectorAll('.tab[data-goto]').forEach(function (b) {
@@ -714,7 +752,7 @@
         b.classList.add('is-on');
         state.rangeSec = parseInt(b.dataset.range, 10);
         drawTrace();
-        connectWs();
+        loadHistory();
       });
     });
     document.querySelectorAll('[data-period]').forEach(function (b) {
@@ -733,7 +771,8 @@
     setInterval(renderTimer, 1000);
     setInterval(function () { if (state.screen === 'stats') loadStats(); }, 15000);
     setInterval(function () { if (state.last) render(); }, 2000);   // заметить, что данные перестали идти       // обратный отсчёт тикает и без телеметрии
-    setInterval(timerFetch, 10000);       // таймер могли поставить/снять с другого устройства
+    setInterval(function () { timerFetch(); activeFetch(); }, 10000);
+    setInterval(loadHistory, 300000);     // раз в 5 мин пересобрать историю окна       // таймер могли поставить/снять с другого устройства
     timerFetch();
     window.addEventListener('resize', drawTrace);
     if (window.matchMedia) {
@@ -752,7 +791,9 @@
     (function boot(attempt) {
       loadStatic().then(function () {
         connectWs();
+        loadHistory();
         timerFetch();
+        activeFetch();
         render();
         if (attempt > 0) toast('Связь с сушилкой восстановлена');
       }).catch(function () {

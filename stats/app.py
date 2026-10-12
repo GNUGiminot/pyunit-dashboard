@@ -231,6 +231,47 @@ def timer_tick():
         c.close()
 
 
+# ============================ история для графика ============================
+
+def history(seconds, points, dryer_id=1):
+    """Вся телеметрия окна, сжатая до ~points точек усреднением по интервалам.
+
+    PyUnit отдаёт историю только целиком (сутки — ~86 тыс. записей, ~20 МБ),
+    а с ограничением по числу записей обрезает окно. Здесь SQLite сам
+    группирует записи по интервалам — быстро и с полным покрытием окна.
+    """
+    seconds = max(60, min(int(seconds), 7 * 86400))
+    points = max(50, min(int(points), 2000))
+    bucket = max(1.0, seconds / float(points))
+    since = (datetime.utcnow() - timedelta(seconds=seconds)).isoformat(sep=' ')
+    src = sqlite3.connect('file:%s?mode=ro' % SRC, uri=True, timeout=10)
+    try:
+        rows = src.execute(
+            'SELECT AVG(julianday(timestamp)), AVG(temperature), AVG(relative_humidity) '
+            'FROM dryer_logs WHERE dryer_id = ? AND timestamp >= ? '
+            'GROUP BY CAST((julianday(timestamp) - julianday(?)) * 86400.0 / ? AS INTEGER) '
+            'ORDER BY 1', (int(dryer_id), since, since, bucket)).fetchall()
+    finally:
+        src.close()
+    pts = []
+    for jd, t, rh in rows:
+        ms = int(round((jd - 2440587.5) * 86400000))     # юлианский день -> Unix, мс
+        pts.append([ms, None if t is None else round(t, 2), None if rh is None else round(rh, 2)])
+    return {'bucket': bucket, 'points': pts}
+
+
+def active_session():
+    c = own()
+    try:
+        a = kv_get(c, 'active', None)
+        if not a:
+            return {'active': False}
+        return {'active': True, 'started_at': a['started_at'], 'material': a['material'],
+                'seconds': a['seconds']}
+    finally:
+        c.close()
+
+
 def summary(period):
     c = own()
     try:
@@ -306,6 +347,16 @@ class H(BaseHTTPRequestHandler):
             q = parse_qs(u.query).get('period', ['all'])[0]
             body = json.dumps(summary(q), ensure_ascii=False).encode('utf-8')
             code = 200
+        elif path in ('/stats/history', '/history'):
+            q = parse_qs(u.query)
+            try:
+                res = history(q.get('seconds', ['7200'])[0], q.get('points', ['480'])[0],
+                              q.get('dryer', ['1'])[0])
+                body, code = json.dumps(res).encode('utf-8'), 200
+            except (ValueError, sqlite3.Error) as e:
+                body, code = json.dumps({'error': str(e)}, ensure_ascii=False).encode('utf-8'), 400
+        elif path in ('/stats/active', '/active'):
+            body, code = json.dumps(active_session(), ensure_ascii=False).encode('utf-8'), 200
         elif path in ('/stats/timer', '/timer'):
             c = own()
             try:
