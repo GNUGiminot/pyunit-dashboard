@@ -589,7 +589,15 @@
   }
 
   function renderStats(s) {
-    $('totRuns').textContent = s.totals.runs;
+    $('statsDemo').hidden = !state.demo;
+    var runs = $('totRuns');
+    runs.textContent = s.totals.runs;
+    if (s.totals.active) {
+      var extra = document.createElement('small');
+      extra.className = 'total__extra';
+      extra.textContent = '+1 идёт';
+      runs.appendChild(extra);
+    }
     $('totHours').textContent = fmtHours(s.totals.seconds);
     $('totHeat').textContent = fmtHours(s.totals.heater_seconds);
 
@@ -606,7 +614,8 @@
         '<span class="mat__num"></span>' +
         '<span class="mat__bar"><i class="mat__fill"></i></span>';
       li.querySelector('.mat__name').textContent = m.name;
-      li.querySelector('.mat__num').textContent = m.runs + ' × · ' + fmtHours(m.seconds) + ' ч';
+      li.querySelector('.mat__num').textContent =
+        (m.runs ? m.runs + ' × · ' : '') + fmtHours(m.seconds) + ' ч' + (m.active ? ' · идёт' : '');
       li.querySelector('.mat__fill').style.width = (max ? (m.seconds / max) * 100 : 0).toFixed(1) + '%';
       ml.appendChild(li);
     });
@@ -851,6 +860,7 @@
       b.addEventListener('click', function () { onTimerChip(parseFloat(b.dataset.hours)); });
     });
     setInterval(renderTimer, 1000);
+    setInterval(function () { if (state.screen === 'stats') loadStats(); }, 15000);
     setInterval(function () { if (state.last) render(); }, 2000);   // заметить, что данные перестали идти       // обратный отсчёт тикает и без телеметрии
     setInterval(timerFetch, 10000);       // таймер могли поставить/снять с другого устройства
     timerFetch();

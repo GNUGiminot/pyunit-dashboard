@@ -227,33 +227,62 @@ def timer_tick():
 def summary(period):
     c = own()
     try:
-        where, args = '', ()
+        where, args, cut = '', (), None
         if period in ('30', '365'):
-            cut = (datetime.utcnow() - timedelta(days=int(period))).isoformat()
+            # sep=' ' — в базе метки вида '2026-10-12 16:33:34'; с 'T' строковое
+            # сравнение отрезало бы сушки граничного дня периода
+            cut = (datetime.utcnow() - timedelta(days=int(period))).isoformat(sep=' ')
             where, args = 'WHERE started_at >= ?', (cut,)
         rows = c.execute('SELECT started_at,material,seconds,heater_seconds,outcome '
                          'FROM sessions %s ORDER BY started_at DESC' % where, args).fetchall()
-        totals = {'runs': 0, 'seconds': 0.0, 'heater_seconds': 0.0, 'aborted': 0}
+        totals = {'runs': 0, 'seconds': 0.0, 'heater_seconds': 0.0, 'aborted': 0, 'active': 0}
         mats = {}
-        for started, mat, sec, hs, out in rows:
+
+        def mat(name):
+            return mats.setdefault(name, {'name': name, 'runs': 0, 'seconds': 0.0,
+                                          'done_seconds': 0.0, 'active': False})
+
+        for started, name, sec, hs, out in rows:
             totals['seconds'] += sec
             totals['heater_seconds'] += hs
             if out == 'completed':
                 totals['runs'] += 1
-                m = mats.setdefault(mat, {'name': mat, 'runs': 0, 'seconds': 0.0})
+                m = mat(name)
                 m['runs'] += 1
                 m['seconds'] += sec
+                m['done_seconds'] += sec
             else:
                 totals['aborted'] += 1
-        for m in mats.values():
-            m['avg_seconds'] = m['seconds'] / m['runs']
+
+        # Идущая сушка учитывается сразу: её время входит в часы работы и в
+        # материал, но число сушек — только завершённые (прерванная не должна
+        # засчитаться как сделанная), идущая отдаётся отдельно.
+        current = None
         act = kv_get(c, 'active', None)
+        if act and (cut is None or act['started_at'] >= cut):
+            totals['seconds'] += act['seconds']
+            totals['heater_seconds'] += act['heater']
+            totals['active'] = 1
+            m = mat(act['material'])
+            m['seconds'] += act['seconds']
+            m['active'] = True
+            current = {'started_at': act['started_at'], 'material': act['material'],
+                       'seconds': act['seconds'], 'outcome': 'active'}
+
+        for m in mats.values():
+            # среднее — только по завершённым, иначе идущая сушка его исказит
+            m['avg_seconds'] = (m['done_seconds'] / m['runs']) if m['runs'] else None
+            del m['done_seconds']
+
+        sessions = [{'started_at': r[0], 'material': r[1], 'seconds': r[2], 'outcome': r[4]}
+                    for r in rows[:50]]
+        if current:
+            sessions.insert(0, current)
         return {
             'totals': totals,
             'materials': sorted(mats.values(), key=lambda m: -m['seconds']),
-            'sessions': [{'started_at': r[0], 'material': r[1], 'seconds': r[2], 'outcome': r[4]}
-                         for r in rows[:50]],
-            'active': bool(act),
+            'sessions': sessions,
+            'active': bool(current),
         }
     finally:
         c.close()

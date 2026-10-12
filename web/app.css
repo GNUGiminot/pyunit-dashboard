@@ -351,6 +351,8 @@ body.is-stale .dials, body.is-stale .setpoints, body.is-stale .progress { opacit
 .sess__date { font-family: var(--read); color: var(--ink-mute); font-size: .69rem; }
 .sess__mat { font-weight: 700; }
 .sess__dur { font-family: var(--read); font-variant-numeric: tabular-nums; color: var(--ink-dim); }
+.sess[data-outcome='active'] .sess__mat::after { content: ' · идёт'; font-size: .66rem; font-weight: 700; color: var(--accent); }
+.sess[data-outcome='active'] .sess__dur { color: var(--accent); }
 .sess[data-outcome='aborted'] .sess__mat { color: var(--ink-mute); font-weight: 600; }
 .sess[data-outcome='aborted'] .sess__mat::after { content: ' · прервана'; font-size: .65rem; font-weight: 500; }
 
@@ -374,6 +376,17 @@ body.is-stale .dials, body.is-stale .setpoints, body.is-stale .progress { opacit
 .link__desc { font-size: .72rem; color: var(--ink-mute); padding-right: 28px; }
 .link--main { border-color: var(--accent); }
 @media (min-width: 900px) { .links { grid-template-columns: 1fr 1fr; } .link--main { grid-column: 1 / -1; } }
+
+.total__extra {
+  display: block; margin-top: .2rem; font-family: var(--face);
+  font-size: .62rem; font-weight: 700; letter-spacing: .04em; color: var(--accent);
+}
+.demo-note {
+  margin: 0; padding: .7rem .9rem; border-radius: var(--r-sm);
+  border: 1px dashed var(--accent); color: var(--ink); background: var(--panel);
+  font-size: .8rem; font-weight: 600; text-align: center;
+}
+.demo-note[hidden] { display: none; }
 
 /* --- Нижняя навигация --------------------------------------------------- */
 .tabs {
