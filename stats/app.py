@@ -54,6 +54,27 @@ def own():
     return c
 
 
+def dedupe_sessions():
+    """Одна сушка — одна запись (ключ — время начала).
+
+    Телеметрию приходится перечитывать заново, если база PyUnit «откатилась»
+    (очистка при старте, выключение из розетки до сброса журнала SQLite).
+    Раньше это давало дубли сушек; теперь повторная запись игнорируется, а
+    уже накопленные дубли удаляются — остаётся первая, «живая» запись (в ней
+    верный итог, например «остановлена таймером»).
+    """
+    c = own()
+    try:
+        removed = c.execute('DELETE FROM sessions WHERE rowid NOT IN '
+                            '(SELECT MIN(rowid) FROM sessions GROUP BY started_at)').rowcount
+        c.execute('CREATE UNIQUE INDEX IF NOT EXISTS sessions_started ON sessions(started_at)')
+        c.commit()
+        if removed:
+            print('sessions: удалено дублей: %d' % removed, flush=True)
+    finally:
+        c.close()
+
+
 def kv_get(c, k, default=None):
     r = c.execute('SELECT v FROM kv WHERE k=?', (k,)).fetchone()
     return json.loads(r[0]) if r else default
@@ -78,7 +99,7 @@ def preset_names(src):
 def finish(c, act, outcome):
     if act['seconds'] < 60:     # случайный клик «старт — стоп» не считаем
         return
-    c.execute('INSERT INTO sessions(started_at,material,preset_id,seconds,heater_seconds,outcome) '
+    c.execute('INSERT OR IGNORE INTO sessions(started_at,material,preset_id,seconds,heater_seconds,outcome) '
               'VALUES(?,?,?,?,?,?)',
               (act['started_at'], act['material'], act['preset_id'],
                act['seconds'], act['heater'], outcome))
@@ -412,6 +433,7 @@ def loop():
 if __name__ == '__main__':
     os.makedirs(os.path.dirname(OWN), exist_ok=True)
     own().close()
+    dedupe_sessions()
     threading.Thread(target=loop, daemon=True).start()
     print('stats service on :8000, source=%s' % SRC, flush=True)
     ThreadingHTTPServer(('0.0.0.0', 8000), H).serve_forever()
