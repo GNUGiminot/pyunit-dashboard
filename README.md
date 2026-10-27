@@ -100,6 +100,21 @@ cd pyunit-dashboard
 [`dryer-companion`](https://github.com/GNUGiminot/PyUnit/tree/dryer-companion).
 Панель от этих исправлений не зависит и работает с оригинальным PyUnit.
 
+### Повторный разбор — [cbc550d](https://github.com/GNUGiminot/PyUnit/commit/cbc550d)
+
+| Что было | Что стало |
+|---|---|
+| **Прогрев затягивался на часы.** Выдержка начинается, когда влажность дойдёт до цели, а при 50 °C комнатный воздух даёт 12–15 % — цель 10 % недостижима, и прогрев шёл до аварийного предела `dry_time`. | Воздух на температуре, а влажность 20 мин не улучшается — начинается выдержка. Модель: PLA — 0:36 вместо 1:44, сырая комната — 0:25 вместо 4:00. |
+| **Сбой связи с Klipper не выключал нагрев.** Ошибки Moonraker записывались в журнал как «Dryer missing», аварийное отключение не срабатывало. | Нагрев снимается при любой ошибке цикла; после 15 сбоев подряд открывается заслонка. |
+| После перезапуска PyUnit посреди сушки уставка нагревателя в Klipper могла остаться. | В ожидании уставка всегда снимается. |
+| На горячих пресетах (PC, PA) шаг округления датчика больше порога проветривания — заслонка реагировала на шум. | Порог не меньше двух шагов датчика при текущей температуре. |
+| Поле пресета «коридор хранения» (`humidity_storage_range`) не использовалось. | Хранение по влажности берёт коридор из пресета (0 — общий из настроек). |
+| Правка температуры пресета посреди сушки не меняла потолок блока нагревателя. | Потолок пересчитывается. |
+| — | Воздух горячее потолка блока на 2 °C (неисправность датчика/нагревателя) — нагрев выключается. |
+
+Таймер «стоп через N ч» панели теперь считает по монотонным часам: у устройства нет RTC, и
+таймер, поставленный до синхронизации времени по сети, мог сработать сразу или не сработать.
+
 ### Логика сушки — [2ac9fb9](https://github.com/GNUGiminot/PyUnit/commit/2ac9fb9)
 
 Ошибки найдены и проверены на модели сушилки (нагреватель, воздух, влага катушки, ход
@@ -139,20 +154,24 @@ cd pyunit-dashboard
 PyUnit должен быть остановлен (ничего не сушит). На устройстве:
 
 ```bash
-mkdir -p ~/PyUnit/patch/tools && curl -fsSL https://raw.githubusercontent.com/GNUGiminot/PyUnit/2ac9fb9/api/tools/dryer_control.py -o ~/PyUnit/patch/tools/dryer_control.py
+B=https://raw.githubusercontent.com/GNUGiminot/PyUnit/cbc550d/api
+mkdir -p ~/PyUnit/patch/tools ~/PyUnit/patch/workers
+curl -fsSL $B/tools/dryer_control.py -o ~/PyUnit/patch/tools/dryer_control.py
+curl -fsSL $B/workers/status_worker.py -o ~/PyUnit/patch/workers/status_worker.py
 ```
 
-и подключить файл поверх оригинального в `~/PyUnit/docker-compose.override.yml`:
+и подключить файлы поверх оригинальных в `~/PyUnit/docker-compose.override.yml`:
 
 ```yaml
 services:
   pyunit:
     volumes:
       - ./patch/tools/dryer_control.py:/app/api/tools/dryer_control.py:ro
+      - ./patch/workers/status_worker.py:/app/api/workers/status_worker.py:ro
 ```
 
 затем пересоздать контейнер (`docker compose up -d`; для `docker-compose` 1.29 —
-`docker-compose down && docker-compose up -d`). Откат — удалить эту строку и пересоздать контейнер.
+`docker-compose down && docker-compose up -d`). Откат — удалить эти строки и пересоздать контейнер.
 
 ## Лицензия
 

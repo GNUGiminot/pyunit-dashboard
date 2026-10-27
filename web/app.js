@@ -566,8 +566,10 @@
   function isRunning() { return !!(state.last && state.last.status && state.last.status !== 'pending'); }
 
   function timerApply(r) {
+    // Время конца — от остатка и часов телефона: часы самой сушилки (без RTC)
+    // до синхронизации по сети могут врать
     timer = (r && r.active)
-      ? { active: true, stopAt: r.stop_at * 1000, hours: r.hours }
+      ? { active: true, stopAt: Date.now() + r.remaining * 1000, hours: r.hours }
       : { active: false, stopAt: 0, hours: 0 };
     renderTimer();
   }

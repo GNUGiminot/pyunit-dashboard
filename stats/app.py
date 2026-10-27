@@ -176,24 +176,48 @@ def ingest():
 
 # ============================ таймер останова ============================
 
+def boot_id():
+    try:
+        with open('/proc/sys/kernel/random/boot_id') as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
+# Таймер считается по монотонным часам: у устройства нет RTC, и после
+# включения стенные часы прыгают при синхронизации по сети (на часы, дни,
+# а то и годы). По стенным часам таймер, поставленный до синхронизации,
+# срабатывал сразу или не срабатывал вовсе. Монотонные часы общие для всех
+# контейнеров хоста и переживают перезапуск сервиса, но не перезагрузку —
+# её ловим по boot_id (после перезагрузки PyUnit всё равно в ожидании).
+def timer_left(t):
+    """Сколько осталось, с; None — таймер из прошлой загрузки (недействителен)."""
+    if 'stop_mono' not in t or t.get('boot') != boot_id():
+        return None
+    return max(0.0, t['stop_mono'] - time.monotonic())
+
+
 def timer_get(c):
     t = kv_get(c, 'timer', None)
     if not t:
         return {'active': False}
-    left = max(0.0, t['stop_at'] - time.time())
+    left = timer_left(t)
+    if left is None:
+        return {'active': False}
+    # stop_at — для показа; браузеру надёжнее считать от remaining
     return {'active': True, 'dryer_id': t['dryer_id'], 'hours': t['hours'],
-            'set_at': t['set_at'], 'stop_at': t['stop_at'], 'remaining': left}
+            'stop_at': time.time() + left, 'remaining': left}
 
 
 def timer_set(dryer_id, hours):
     hours = float(hours)
     if not (TIMER_MIN_H <= hours <= TIMER_MAX_H):
         raise ValueError('таймер от %.2f до %.0f ч' % (TIMER_MIN_H, TIMER_MAX_H))
-    now = time.time()
+    mono = time.monotonic()
     c = own()
     try:
-        kv_put(c, 'timer', {'dryer_id': int(dryer_id), 'hours': hours,
-                            'set_at': now, 'stop_at': now + hours * 3600})
+        kv_put(c, 'timer', {'dryer_id': int(dryer_id), 'hours': hours, 'boot': boot_id(),
+                            'set_mono': mono, 'stop_mono': mono + hours * 3600})
         c.commit()
         return timer_get(c)
     finally:
@@ -225,16 +249,22 @@ def timer_tick():
         t = kv_get(c, 'timer', None)
         if not t:
             return
-        now = time.time()
+        left = timer_left(t)
+        if left is None:
+            # таймер старого формата или до перезагрузки устройства
+            kv_put(c, 'timer', None)
+            c.commit()
+            print('timer: таймер из прошлой загрузки снят', flush=True)
+            return
         status = kv_get(c, 'last_status', None)
         # Сушилка уже стоит — значит её остановили иначе; таймер снимаем,
         # чтобы он не оборвал следующую сушку, к которой не относится.
-        if status == 'pending' and now - t['set_at'] > STALE_GRACE:
+        if status == 'pending' and time.monotonic() - t['set_mono'] > STALE_GRACE:
             kv_put(c, 'timer', None)
             c.commit()
             print('timer: сушилка уже остановлена, таймер снят', flush=True)
             return
-        if now >= t['stop_at']:
+        if left <= 0:
             try:
                 ok = pyunit_stop(t['dryer_id'])
             except Exception as e:
